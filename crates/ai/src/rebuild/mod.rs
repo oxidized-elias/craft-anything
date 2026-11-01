@@ -897,8 +897,11 @@ pub fn project_builder<'a>(cfg: &crate::AiConfig, ws: &'a Workspace) -> Option<&
 /// The backend that builds: the one named, else the Builder role's, else an agent app, else any
 /// enabled AI backend (which builds with our own agent loop and the Build tools).
 pub fn builder_backend(cfg: &crate::AiConfig, named: Option<&str>) -> Result<crate::BackendEntry, ToolError> {
+    if named.is_none() && cfg.routing_strategy != crate::registry::Strategy::Auto {
+        return cfg.route(Role::Builder, &crate::registry::Requirements { tools: true, ..Default::default() });
+    }
     let found = match named {
-        Some(n) => cfg.get(n).cloned(),
+        Some(n) => cfg.get(n).filter(|b| b.config.enabled).cloned(),
         None => {
             cfg.backend_for(Role::Builder).or_else(|| cfg.enabled().find(|b| b.config.kind == BackendKind::AgentCli)).or_else(|| cfg.enabled().next()).cloned()
         }

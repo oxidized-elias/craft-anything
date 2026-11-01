@@ -6,6 +6,13 @@ secret scan of all history clean).
 
 ## What works, and how it was checked
 
+Issue #14 implementation (2026-10-31): direct Gemini/xAI adapters, OpenAI Responses, persisted
+model discovery and routing, native builder fallback chains, and the AI Control Center are added
+on the feature branch. The full proposal is not complete; see [AI providers](ai-providers.md)
+and R2.1. Workspace tests, clippy and the release build are blocked by crates.io DNS/dependency
+availability in this environment. Isolated offline tests cover the transport-independent logic;
+they do not validate the engine/UI integration or replace a full app build.
+
 | Area | State | Verified by |
 |---|---|---|
 | Engine | 271 engine tools (284 with the AI and setup layers') across native, managed, Java, Android, Apple, JS/Electron, web, firmware, packets, databases, game archives and assets; see [tools.md](tools.md) and [tool-status.md](tool-status.md). A saved result can be narrowed without running again (`core_evidence_browse` keeps the rows matching given field values, cut to chosen fields) | A functional audit that ran every tool on real inputs on Windows, plus 600+ unit and integration tests |

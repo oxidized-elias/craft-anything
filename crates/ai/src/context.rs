@@ -19,7 +19,7 @@ pub const CLOUD_CONTEXT_TOKENS: u64 = 150_000;
 /// The same for a local model, whose context is usually small.
 pub const LOCAL_CONTEXT_TOKENS: u64 = 24_000;
 /// The version of `transcript.json`.
-pub const TRANSCRIPT_VERSION: u32 = 1;
+pub const TRANSCRIPT_VERSION: u32 = 2;
 
 /// What the model is asked when the oldest part of a conversation is replaced.
 pub const SUMMARY_REQUEST: &str = "The conversation is getting too long to continue. Write a summary of the work so far that you can carry on from without the earlier messages: the task, what has been done (files made or changed, commands that worked), decisions and the reasons for them, what is left to do, and anything the person asked for. Be specific and complete; leave out pleasantries. Don't call any tools.";
@@ -34,6 +34,7 @@ pub fn estimate_tokens(history: &[Msg]) -> u64 {
             Block::Text { text } => text.len(),
             Block::Thinking { thinking, .. } => thinking.len(),
             Block::RedactedThinking { data } => data.len(),
+            Block::ProviderData { data, .. } => data.to_string().len(),
             Block::ToolUse { input, name, .. } => name.len() + input.to_string().len(),
             Block::ToolResult { content, .. } => content.len(),
         })

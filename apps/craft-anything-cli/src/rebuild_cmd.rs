@@ -71,9 +71,9 @@ pub fn rebuild(cli: &Cli, a: &RebuildArgs) -> u8 {
     }
 }
 
-/// Use the configured agent app, or add the first one found on this computer.
+/// Use configured AI (including direct APIs), or add the first available agent app.
 fn ensure_agent(hub: &AiHub) -> Result<(), ToolError> {
-    if hub.backends().iter().any(|b| b.kind == BackendKind::AgentCli && b.enabled) {
+    if hub.backends().iter().any(|b| b.enabled) {
         return Ok(());
     }
     if let Some(d) = hub.detect().into_iter().find(|d| d.suggestion.kind == BackendKind::AgentCli) {

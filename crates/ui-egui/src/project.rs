@@ -141,6 +141,8 @@ impl CraftApp {
 
     /// `shown`: the person's message as the feed shows it (already in the app's feed).
     fn start_run(&mut self, ws: Workspace, backend: Option<String>, message: Option<String>, shown: Option<String>) {
+        let backend =
+            if ws.manifest.builder.is_none() && self.ai_config.routing_strategy != craft_anything_ai::registry::Strategy::Auto { None } else { backend };
         let opts = self.run_options(backend, message, shown);
         self.start_run_with(ws, opts);
     }

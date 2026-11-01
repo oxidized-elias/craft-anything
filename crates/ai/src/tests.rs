@@ -233,7 +233,7 @@ fn anthropic_refusal_and_http_errors() {
         (401, "application/json", r#"{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}"#.into()),
     ]);
     let (h, _d) = hub();
-    add(&h, "Claude", BackendKind::Anthropic, &url, Some("k"));
+    add(&h, "Claude", BackendKind::Anthropic, &url, Some("sk-test-auth"));
     let mut c = h.start(Some("Claude"), false).unwrap();
     let ev = run(&mut c, "q");
     assert!(ev.iter().any(|e| matches!(e, AgentEvent::Error { message, .. } if message.contains("declined"))));
@@ -246,6 +246,37 @@ fn anthropic_refusal_and_http_errors() {
 
 #[test]
 fn openai_streaming_tool_loop() {
+    let t1 = sse(&[json!({"type":"response.completed", "response":{
+        "status":"completed", "model":"gpt-x", "output":[{"type":"function_call", "call_id":"call_a", "name":"core_session_show", "arguments":"{}"}],
+        "usage":{"input_tokens":20,"output_tokens":3}
+    }})]);
+    let t2 = sse(&[
+        json!({"type":"response.output_text.delta", "delta":"Nothing open."}),
+        json!({"type":"response.completed", "response":{"status":"completed", "output":[{"type":"message", "content":[{"type":"output_text", "text":"Nothing open."}]}]}}),
+    ]);
+    let (url, seen) = mock(vec![(200, "text/event-stream", t1), (200, "text/event-stream", t2)]);
+    let (h, _d) = hub();
+    add(&h, "GPT", BackendKind::Openai, &url, Some("sk-o"));
+    let mut c = h.start(Some("GPT"), true).unwrap();
+    let ev = run(&mut c, "status?");
+    assert!(ev.iter().any(|e| matches!(e, AgentEvent::TextDelta { text } if text == "Nothing open.")));
+    assert!(ev.iter().any(|e| matches!(e, AgentEvent::ToolFinished { ok: true, .. })));
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[0].path, "/responses");
+    assert_eq!(seen[0].header("authorization"), Some("Bearer sk-o"));
+    assert_eq!(seen[0].body["store"], false);
+    let input = seen[1].body["input"].as_array().unwrap();
+    assert!(input.iter().any(|v| v["type"] == "function_call_output" && v["call_id"] == "call_a"));
+}
+
+#[test]
+fn gemini_and_xai_use_native_tools_without_a_cli() {
+    for kind in [BackendKind::Gemini, BackendKind::Xai] {
+        direct_provider_tool_loop(kind);
+    }
+}
+
+fn direct_provider_tool_loop(kind: BackendKind) {
     let t1 = chat_sse(&[
         json!({"model":"gpt-x","choices":[{"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"core_session_show","arguments":""}}]}}]}),
         json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}),
@@ -255,7 +286,7 @@ fn openai_streaming_tool_loop() {
     let t2 = chat_sse(&[json!({"choices":[{"delta":{"content":"Nothing open."},"finish_reason":"stop"}]})]);
     let (url, seen) = mock(vec![(200, "text/event-stream", t1), (200, "text/event-stream", t2)]);
     let (h, _d) = hub();
-    add(&h, "GPT", BackendKind::Openai, &url, Some("sk-o"));
+    add(&h, "GPT", kind, &url, Some("sk-o"));
     let mut c = h.start(Some("GPT"), true).unwrap();
     let ev = run(&mut c, "status?");
     assert!(ev.iter().any(|e| matches!(e, AgentEvent::TextDelta { text } if text == "Nothing open.")));
@@ -268,6 +299,32 @@ fn openai_streaming_tool_loop() {
     assert_eq!(msgs[2]["tool_calls"][0]["id"], "call_a");
     assert_eq!(msgs[3]["role"], "tool");
     assert_eq!(msgs[3]["tool_call_id"], "call_a");
+}
+
+#[test]
+fn discovery_persists_metadata_and_routes_without_exposing_keys() {
+    let (url, _) = mock(vec![(
+        200,
+        "application/json",
+        json!({"data":[
+            {"id":"cheap", "context_length":32000, "supported_parameters":["tools"], "pricing":{"prompt":"0.000001", "completion":"0.000002"}},
+            {"id":"expensive", "pricing":{"prompt":"0.001", "completion":"0.002"}}
+        ]})
+        .to_string(),
+    )]);
+    let (hub, dir) = hub();
+    add(&hub, "Router", BackendKind::Openrouter, &url, Some("sk-test"));
+    let models = hub.discover_models("Router").unwrap();
+    assert_eq!(models.len(), 2);
+    assert_eq!(models[0].input_per_mtok, Some(1.0));
+    hub.set_routing_strategy(registry::Strategy::LowestCost).unwrap();
+    let selected = hub.route(Role::Lead, &registry::Requirements { input_tokens: 1000, output_tokens: 1000, tools: true, ..Default::default() }).unwrap();
+    assert_eq!(selected.config.model, "cheap");
+    assert_eq!(hub.config().model_catalog, models);
+    let saved = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(!saved.contains("sk-test"));
+    hub.set_enabled("Router", false).unwrap();
+    assert!(hub.recommend_model(registry::Strategy::Auto, &Default::default()).is_err());
 }
 
 #[test]

@@ -309,7 +309,7 @@ impl AgentLoop {
                 Some(s) => (s.name.clone(), s.local, result.model.clone()),
                 None => break,
             };
-            let cost = price::cost(&model_id, &result.usage, &self.cfg.prices, local);
+            let cost = price::backend_cost(&slot_name, &model_id, &result.usage, &self.cfg.prices, local);
             self.meter.add(result.usage, cost);
             msg_usage.add(result.usage);
             msg_cost = match (msg_cost, cost) {

@@ -13,6 +13,7 @@ pub mod config;
 pub mod context;
 pub mod detect;
 pub mod failure_log;
+pub mod gateway;
 pub mod http;
 pub mod key_tools;
 pub mod keys;
@@ -20,7 +21,11 @@ pub mod model;
 pub mod openai;
 pub mod price;
 pub mod prompt;
+pub mod providers;
 pub mod rebuild;
+pub mod registry;
+pub mod registry_tools;
+pub mod responses;
 pub mod ssh;
 
 pub use config::{AiConfig, BackendEntry, BackendOptions, Price};
@@ -43,6 +48,8 @@ pub enum BackendKind {
     Anthropic,
     Openai,
     Openrouter,
+    Gemini,
+    Xai,
     /// Ollama, LM Studio, llama.cpp, vLLM… (OpenAI-compatible HTTP).
     OpenaiCompatible,
     /// Claude Code, Codex, Gemini CLI, Hermes Agent, OpenCode… run as a subprocess with our MCP server.
@@ -55,6 +62,8 @@ impl BackendKind {
             BackendKind::Anthropic => "Anthropic (Claude API)",
             BackendKind::Openai => "OpenAI",
             BackendKind::Openrouter => "OpenRouter",
+            BackendKind::Gemini => "Google Gemini API",
+            BackendKind::Xai => "xAI Grok API",
             BackendKind::OpenaiCompatible => "Local / OpenAI-compatible server",
             BackendKind::AgentCli => "Agent app (command line)",
         }
@@ -66,13 +75,15 @@ impl BackendKind {
             BackendKind::Anthropic => anthropic::MODELS,
             BackendKind::Openai => &[openai::OPENAI_DEFAULT_MODEL],
             BackendKind::Openrouter => openai::OPENROUTER_MODELS,
+            BackendKind::Gemini => &["gemini-3.8-flash"],
+            BackendKind::Xai => &["grok-4.7"],
             BackendKind::OpenaiCompatible => &[],
             BackendKind::AgentCli => &["claude-code", "codex", "gemini-cli", "opencode", "hermes"],
         }
     }
 
     pub fn needs_key(self) -> bool {
-        matches!(self, BackendKind::Anthropic | BackendKind::Openai | BackendKind::Openrouter)
+        !matches!(self, BackendKind::OpenaiCompatible | BackendKind::AgentCli)
     }
 }
 
@@ -239,6 +250,7 @@ impl ChatModel for Tunneled {
 pub fn tools() -> Vec<craft_anything_engine::ToolSpec> {
     let mut v = rebuild::tools::specs();
     v.extend(key_tools::specs());
+    v.extend(registry_tools::specs());
     v
 }
 
@@ -434,7 +446,7 @@ impl AiHub {
                 a.fallbacks = e.options.fallbacks_enabled.unwrap_or(true);
                 Box::new(a)
             }
-            BackendKind::Openai => Box::new(openai::OpenAi::official(base, self.key_for(e)?, &c.model)),
+            BackendKind::Openai => Box::new(responses::Responses::new(base, self.key_for(e)?, &c.model)),
             BackendKind::Openrouter => Box::new(openai::OpenAi::openrouter(base, self.key_for(e)?, &c.model)),
             BackendKind::OpenaiCompatible => {
                 let mut o = openai::OpenAi::compatible(&c.name, base.unwrap_or("http://127.0.0.1:11434/v1"), self.keys.get(&c.name), &c.model);
@@ -442,15 +454,21 @@ impl AiHub {
                 Box::new(o)
             }
             BackendKind::AgentCli => return Err(ToolError::invalid(format!("{} is an agent app, not an API backend.", c.name))),
+            kind => providers::Providers::default().get(kind).ok_or_else(|| ToolError::invalid("No API provider is registered for this backend."))?.connect(
+                base,
+                self.key_for(e)?,
+                &c.model,
+            ),
         };
         let model = match tunnel {
             Some(t) => Box::new(Tunneled { inner: model, _tunnel: t }) as Box<dyn ChatModel>,
             None => model,
         };
+        let model = Box::new(gateway::Gateway::new(model).with_secret(self.keys.resolve(&c.name, c.kind)));
         Ok(ModelSlot {
             name: c.name.clone(),
             model,
-            local: c.kind == BackendKind::OpenaiCompatible,
+            local: registry::is_local(c),
             effort: e.options.effort,
             max_turns: e.options.max_turns.unwrap_or(agent::DEFAULT_MAX_TURNS),
         })
@@ -465,10 +483,7 @@ impl AiHub {
         let cfg = self.config();
         let first = match backend {
             Some(n) => self.entry(n)?,
-            None => cfg
-                .backend_for(Role::Lead)
-                .cloned()
-                .ok_or_else(|| ToolError::unavailable("No AI is set up yet.").with_remediation("Add one in Settings → AI."))?,
+            None => self.route(Role::Lead, &registry::Requirements::default())?,
         };
         if first.config.kind == BackendKind::AgentCli {
             let spec = cli_agents::CliSpec::new(first.config.clone(), first.options.clone(), beginner, self.project_root());
@@ -488,7 +503,11 @@ impl AiHub {
             }
         }
         let host = Arc::new(EngineHost(self.engine.clone()));
-        let conv = ApiConversation::start(host, chain, LoopConfig { beginner, prices: cfg.prices.clone(), ..LoopConfig::default() })?;
+        let conv = ApiConversation::start(
+            host,
+            chain,
+            LoopConfig { beginner, prices: cfg.effective_prices(), context_tokens: cfg.context_budget_for(&first), ..LoopConfig::default() },
+        )?;
         Ok(Box::new(conv))
     }
 
@@ -518,11 +537,21 @@ impl AiHub {
     ) -> Result<ApiConversation, ToolError> {
         let mut slot = self.build_model(entry)?;
         slot.max_turns = slot.max_turns.max(agent::BUILDER_MAX_TURNS);
+        let cfg = self.config();
+        let mut chain = vec![slot];
+        for name in cfg.chain_from(&entry.config.name).into_iter().skip(1) {
+            if let Some(e) = cfg.get(&name).filter(|e| e.config.enabled && e.config.kind != BackendKind::AgentCli)
+                && let Ok(mut fallback) = self.build_model(e)
+            {
+                fallback.max_turns = fallback.max_turns.max(agent::BUILDER_MAX_TURNS);
+                chain.push(fallback);
+            }
+        }
         let host = Arc::new(EngineHost(self.engine.clone()));
         ApiConversation::start_with(
             host,
-            vec![slot],
-            LoopConfig { beginner, prices: self.config().prices.clone(), transcript, ..LoopConfig::default() },
+            chain,
+            LoopConfig { beginner, prices: cfg.effective_prices(), context_tokens: cfg.context_budget_for(entry), transcript },
             toolsets.iter().copied().collect(),
         )
     }
@@ -562,7 +591,42 @@ impl AiHub {
                 openai::OpenAi::compatible(&e.config.name, base.unwrap_or("http://127.0.0.1:11434/v1"), self.keys.get(&e.config.name), "").list_models(t)
             }
             BackendKind::AgentCli => Ok(BackendKind::AgentCli.suggested_models().iter().map(|s| s.to_string()).collect()),
+            kind => providers::Providers::default().get(kind).ok_or_else(|| ToolError::invalid("No API provider is registered for this backend."))?.discover(
+                base,
+                self.key_for(&e)?,
+                t,
+            ),
         }
+    }
+
+    /// Refresh one provider's catalog. Failed refreshes preserve the previous snapshot.
+    /// This performs network and disk I/O and must run on a worker.
+    pub fn discover_models(&self, name: &str) -> Result<Vec<registry::ModelInfo>, ToolError> {
+        let entry = self.entry(name)?;
+        let c = &entry.config;
+        let models = registry::discover(c, self.keys.resolve(name, c.kind))?;
+        let mut cfg = self.config();
+        cfg.model_catalog.retain(|m| m.backend != name);
+        cfg.model_catalog.extend(models.clone());
+        self.save_config(&cfg)?;
+        Ok(models)
+    }
+
+    pub fn recommend_model(&self, strategy: registry::Strategy, requirements: &registry::Requirements) -> Result<registry::ModelInfo, ToolError> {
+        let cfg = self.config();
+        let available: Vec<_> = cfg.model_catalog.iter().filter(|m| cfg.get(&m.backend).is_some_and(|e| e.config.enabled)).cloned().collect();
+        registry::recommend(&available, strategy, requirements).cloned()
+    }
+
+    pub fn set_routing_strategy(&self, strategy: registry::Strategy) -> Result<(), ToolError> {
+        let mut cfg = self.config();
+        cfg.routing_strategy = strategy;
+        self.save_config(&cfg)
+    }
+
+    /// Explicit role choices win over routing. With AUTO, keep the user's backend order.
+    pub fn route(&self, role: Role, requirements: &registry::Requirements) -> Result<BackendEntry, ToolError> {
+        self.config().route(role, requirements)
     }
 
     /// Send a tiny request and time it. Blocking (bounded); run it off the UI thread.
@@ -670,6 +734,12 @@ fn reach(e: &BackendEntry, key: Option<String>) -> Result<u64, String> {
             let program = e.options.command.clone().unwrap_or_else(|| cli_agents::program_for(&e.config.model));
             craft_anything_platform::which(&program).map(|_| ()).ok_or_else(|| format!("{program} isn't on PATH"))
         }
+        kind => providers::Providers::default()
+            .get(kind)
+            .ok_or_else(|| "No API provider is registered for this backend.".to_string())?
+            .discover(base, need(key)?, t)
+            .map(|_| ())
+            .map_err(|e| e.message),
     };
     r.map(|_| start.elapsed().as_millis() as u64)
 }

@@ -31,10 +31,25 @@ pub enum AiCommand {
     List,
     /// Look for keys, local servers, agent CLIs and SSH hosts.
     Detect,
+    /// Refresh and persist a provider's available models and metadata.
+    Models { name: String },
+    /// Recommend a discovered model subject to explicit task constraints.
+    Recommend {
+        #[arg(long, default_value = "AUTO")]
+        strategy: String,
+        #[arg(long)]
+        tools: bool,
+        #[arg(long)]
+        vision: bool,
+        #[arg(long, default_value_t = 0)]
+        context_tokens: u64,
+    },
+    /// Persist the automatic routing policy for new conversations.
+    Routing { strategy: String },
     /// Add a backend.
     Add {
         name: String,
-        /// anthropic, openai, openrouter, openai_compatible, agent_cli
+        /// anthropic, openai, openrouter, gemini, xai, openai_compatible, agent_cli
         #[arg(long)]
         kind: String,
         #[arg(long)]
@@ -183,6 +198,42 @@ pub fn ai(cli: &Cli, c: &AiCommand, f: Format) -> u8 {
         Err(e) => return fail(&e, f),
     };
     match c {
+        AiCommand::Models { name } => match hub.discover_models(name) {
+            Ok(models) => {
+                emit(&json!(models), f);
+                0
+            }
+            Err(e) => fail(&e, f),
+        },
+        AiCommand::Recommend { strategy, tools, vision, context_tokens } => {
+            let strategy = match serde_json::from_value(json!(strategy.to_ascii_uppercase())) {
+                Ok(strategy) => strategy,
+                Err(_) => return crate::usage_error("Unknown routing strategy. Use AUTO, FREE_TIER_FIRST, LOWEST_COST, FASTEST, BEST_QUALITY or LOCAL_FIRST."),
+            };
+            match hub.recommend_model(
+                strategy,
+                &craft_anything_ai::registry::Requirements { tools: *tools, vision: *vision, context_tokens: *context_tokens, ..Default::default() },
+            ) {
+                Ok(model) => {
+                    emit(&json!(model), f);
+                    0
+                }
+                Err(e) => fail(&e, f),
+            }
+        }
+        AiCommand::Routing { strategy } => {
+            let strategy = match serde_json::from_value(json!(strategy.to_ascii_uppercase())) {
+                Ok(strategy) => strategy,
+                Err(_) => return crate::usage_error("Unknown routing strategy."),
+            };
+            match hub.set_routing_strategy(strategy) {
+                Ok(()) => {
+                    emit(&json!({"strategy":strategy}), f);
+                    0
+                }
+                Err(e) => fail(&e, f),
+            }
+        }
         AiCommand::List => {
             let v: Vec<Value> = hub
                 .backends()
@@ -206,7 +257,7 @@ pub fn ai(cli: &Cli, c: &AiCommand, f: Format) -> u8 {
         AiCommand::Add { name, kind, model, base_url, ssh_host, key_env, key_stdin } => {
             let kind: BackendKind = match serde_json::from_value(json!(kind)) {
                 Ok(k) => k,
-                Err(_) => return crate::usage_error("--kind must be one of anthropic, openai, openrouter, openai_compatible, agent_cli"),
+                Err(_) => return crate::usage_error("--kind must be one of anthropic, openai, openrouter, gemini, xai, openai_compatible, agent_cli"),
             };
             let key = match read_key(key_env, *key_stdin) {
                 Ok(k) => k,

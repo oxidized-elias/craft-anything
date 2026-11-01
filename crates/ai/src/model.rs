@@ -21,6 +21,11 @@ pub enum Block {
     RedactedThinking {
         data: String,
     },
+    /// Opaque replay data (encrypted reasoning or signed calls), never shown as text.
+    ProviderData {
+        provider: String,
+        data: Value,
+    },
     ToolUse {
         id: String,
         name: String,

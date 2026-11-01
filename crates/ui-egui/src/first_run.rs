@@ -94,7 +94,7 @@ fn brain(app: &mut CraftApp, ui: &mut Ui, width: f32) {
     header(
         ui,
         "Who builds what you make",
-        "A coding agent such as Claude Code builds it, and an AI answers your questions in plain words. Change this any time in Settings → AI.",
+        "An AI with an API key can build it and answer your questions. You can also use a coding agent. Change this any time in Settings → AI.",
     );
     // Whether something can build yet, in one line: the same rule Make and Start use.
     match app.default_builder() {
@@ -108,8 +108,7 @@ fn brain(app: &mut CraftApp, ui: &mut Ui, width: f32) {
             ui.horizontal_wrapped(|ui| {
                 icons::show(ui, "triangle-alert", 16.0, t.warning);
                 ui.label(
-                    RichText::new(tr("Nothing can build yet: install Claude Code (and sign in to it once), or add an AI with an API key below."))
-                        .color(t.text_dim),
+                    RichText::new(tr("Nothing can build yet: add an AI with an API key below, or install a coding agent and sign in to it.")).color(t.text_dim),
                 );
             });
         }
@@ -137,7 +136,7 @@ fn brain(app: &mut CraftApp, ui: &mut Ui, width: f32) {
                     icons::show(ui, "radar", 22.0, t.text_faint);
                     ui.vertical(|ui| {
                         ui.label(RichText::new(tr("We didn't find an AI on this computer yet")).font(theme::medium(theme::BODY)));
-                        ui.label(RichText::new(tr("You can add a Claude, ChatGPT or OpenRouter key, a local model (Ollama, LM Studio) or an agent you already use, later in Settings → AI.")).color(t.text_dim));
+                        ui.label(RichText::new(tr("You can add an Anthropic, OpenAI, Gemini, xAI or OpenRouter API key, a local model (Ollama, LM Studio) or an agent you already use, later in Settings → AI.")).color(t.text_dim));
                     });
                 });
             });
@@ -165,7 +164,7 @@ fn brain(app: &mut CraftApp, ui: &mut Ui, width: f32) {
 
 fn kind_icon(k: BackendKind) -> &'static str {
     match k {
-        BackendKind::Anthropic | BackendKind::Openai | BackendKind::Openrouter => "key-round",
+        BackendKind::Anthropic | BackendKind::Openai | BackendKind::Openrouter | BackendKind::Gemini | BackendKind::Xai => "key-round",
         BackendKind::OpenaiCompatible => "server",
         BackendKind::AgentCli => "terminal",
     }

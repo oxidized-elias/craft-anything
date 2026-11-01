@@ -476,6 +476,25 @@ Owner: maintainers · Status: in progress (built; live runs need keys)
       oldest part is replaced by a summary the model writes; the conversation is kept in
       `transcript.json` after every step and a follow-up resumes it
 
+#### Issue #14: native providers and model discovery
+- [x] Implement direct Gemini and xAI API adapters through the provider registry, reusing the
+      native tool loop; OpenAI Responses streaming, tool calls and opaque replay data; bounded
+      gateway retries, circuit breaking, credential redaction and native builder fallback chains.
+- [x] Implement persistent model catalogs, constraint-aware recommendations and six routing
+      strategies; AI Control Center discovery, model selection and connection tests; CLI and
+      `settings_ai_*` tools. Metadata not supplied by a provider stays unknown.
+- [ ] Run the new provider, routing, gateway and native build regression tests, clippy and the
+      desktop release build (dependency downloads blocked by DNS in the implementation environment)
+      — claimed: Codex, branch feature/issue-14-native-providers
+- [ ] Validate live Gemini, xAI and OpenAI Responses software builds with provider keys, including
+      resuming a saved project and running its checks without an external agent installed.
+- [ ] Extend discovery with verified account-specific free-tier eligibility, remaining quotas,
+      live latency and quality measurements, and periodic background refresh.
+- [ ] Add native multimodal input and structured answer schemas, persistent semantic project
+      memory, configurable execution spending limits, provider health dashboards, and a specialist
+      agent scheduler with per-agent tool permissions. Existing transcripts, crew roles, approvals,
+      context summaries, tool execution, journals and build checks remain the base for this work.
+
 ### R2.2 More coding agents
 Owner: open · Status: in progress
 - [x] `AcpConversation`: chat with agents that speak ACP (`cli_agents::acp`; agents and their ACP

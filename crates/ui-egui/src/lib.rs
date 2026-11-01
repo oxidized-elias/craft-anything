@@ -152,7 +152,8 @@ pub enum Done {
     },
     Detected(Vec<Detected>),
     /// The configured backends, and the ones chosen to build with and to extract with.
-    Backends(Vec<BackendConfig>, Option<String>, Option<String>),
+    Backends(Vec<BackendConfig>, Option<String>, Option<String>, Box<craft_anything_ai::AiConfig>),
+    AiTest(craft_anything_ai::TestReport),
     Picked {
         pick: Pick,
         path: Option<PathBuf>,
@@ -334,6 +335,7 @@ pub struct CraftApp {
     pub detecting: bool,
     pub log: Vec<LogLine>,
     pub key_inputs: std::collections::BTreeMap<String, String>,
+    pub ai_config: craft_anything_ai::AiConfig,
     /// Every project's rebuild in this window: working, waiting their turn, or finished.
     pub runs: craft_anything_ai::rebuild::RunSet,
     /// What was typed for each note still waiting for a builder, by note id, to put back in the
@@ -422,6 +424,7 @@ impl CraftApp {
             detecting: false,
             log: Vec::new(),
             key_inputs: Default::default(),
+            ai_config: Default::default(),
             runs: craft_anything_ai::rebuild::RunSet::new(craft_anything_engine::settings::BuildSettings::default().parallel),
             drafts: Default::default(),
             usage: Default::default(),
@@ -1252,14 +1255,16 @@ impl CraftApp {
                 self.log(false, format!("Found {} AI option(s) on this computer", d.len()));
                 self.detected = Some(d);
             }
-            Done::Backends(b, builder, extractor) => {
+            Done::Backends(b, builder, extractor, config) => {
                 if self.state.backend.as_ref().is_some_and(|n| !b.iter().any(|c| &c.name == n)) {
                     self.state.backend = None;
                 }
                 self.backends = b;
                 self.builder = builder;
                 self.extractor = extractor;
+                self.ai_config = *config;
             }
+            Done::AiTest(report) => self.toast(format!("{} answered in {} ms: {}", report.backend, report.latency_ms, report.reply), false),
             Done::BackendAdded { name, result } => match result {
                 Ok(()) => {
                     self.toast(i18n::trf("{name} is ready", &[("name", &name)]), false);
@@ -1604,7 +1609,7 @@ pub fn app_icon(size: f32) -> egui::Image<'static> {
 /// Run an action; a panic is logged and swallowed so one bad action never takes the app down.
 /// The configured backends and the ones chosen to build and to extract (read off the UI thread).
 pub(crate) fn backends(hub: &AiHub) -> Done {
-    Done::Backends(hub.backends(), hub.chosen(craft_anything_ai::Role::Builder), hub.chosen(craft_anything_ai::Role::Extractor))
+    Done::Backends(hub.backends(), hub.chosen(craft_anything_ai::Role::Builder), hub.chosen(craft_anything_ai::Role::Extractor), Box::new(hub.config()))
 }
 
 pub fn guard<R>(what: &str, f: impl FnOnce() -> R) -> Option<R> {

@@ -57,6 +57,19 @@ pub fn status_error(what: &str, status: u16, body: &str) -> ToolError {
     ToolError::new(code, format!("{what} answered {status}: {detail}")).with_remediation(remediation).with_details(serde_json::json!({"status": status}))
 }
 
+fn redact_credentials(body: &str, headers: &[(&str, String)]) -> String {
+    let mut clean = body.to_string();
+    for (name, value) in headers {
+        if name.eq_ignore_ascii_case("authorization") || name.eq_ignore_ascii_case("x-api-key") || name.eq_ignore_ascii_case("x-goog-api-key") {
+            let secret = value.strip_prefix("Bearer ").unwrap_or(value);
+            if !secret.is_empty() {
+                clean = clean.replace(secret, "[redacted]");
+            }
+        }
+    }
+    clean
+}
+
 /// POST JSON and return a reader over the (streamed) body; errors on non-2xx.
 pub fn post_json(agent: &ureq::Agent, what: &str, url: &str, headers: &[(&str, String)], body: &Value) -> Result<Box<dyn Read + Send>, ToolError> {
     let mut req = agent.post(url).header("content-type", "application/json");
@@ -67,7 +80,7 @@ pub fn post_json(agent: &ureq::Agent, what: &str, url: &str, headers: &[(&str, S
     let status = resp.status().as_u16();
     if !(200..300).contains(&status) {
         let text = resp.into_body().read_to_string().unwrap_or_default();
-        return Err(status_error(what, status, &text));
+        return Err(status_error(what, status, &redact_credentials(&text, headers)));
     }
     Ok(Box::new(resp.into_body().into_reader()))
 }
@@ -82,7 +95,7 @@ pub fn get_json(agent: &ureq::Agent, what: &str, url: &str, headers: &[(&str, St
     let status = resp.status().as_u16();
     let text = resp.into_body().read_to_string().map_err(|e| net_error(what, e))?;
     if !(200..300).contains(&status) {
-        return Err(status_error(what, status, &text));
+        return Err(status_error(what, status, &redact_credentials(&text, headers)));
     }
     serde_json::from_str(&text).map_err(|e| ToolError::new(ErrorCode::GarbledOutput, format!("{what} sent JSON we couldn't read: {e}")))
 }
@@ -104,6 +117,7 @@ pub fn parse_sse<R: Read>(r: R, mut f: impl FnMut(SseEvent) -> Result<bool, Tool
     let mut cur = SseEvent::default();
     let mut has_data = false;
     let mut line = Vec::new();
+    let mut total = 0usize;
     loop {
         line.clear();
         let n = (&mut reader)
@@ -112,6 +126,10 @@ pub fn parse_sse<R: Read>(r: R, mut f: impl FnMut(SseEvent) -> Result<bool, Tool
             .map_err(|e| ToolError::new(ErrorCode::EngineMissing, format!("The stream broke off: {e}")))?;
         if n == 0 {
             break;
+        }
+        total = total.saturating_add(n);
+        if total > 64 * 1024 * 1024 || cur.data.len().saturating_add(n) > MAX_SSE_LINE {
+            return Err(ToolError::new(ErrorCode::OverLimit, "The response stream exceeded the size limit."));
         }
         if line.last() != Some(&b'\n') && line.len() >= MAX_SSE_LINE {
             return Err(ToolError::new(ErrorCode::OverLimit, "The stream sent a line that was too long."));
@@ -193,5 +211,13 @@ mod tests {
         assert_eq!(e.code, ErrorCode::NoPermission);
         assert!(e.message.contains("invalid x-api-key"));
         assert_eq!(status_error("x", 429, "slow down").code, ErrorCode::OverLimit);
+    }
+
+    #[test]
+    fn echoed_authentication_headers_are_redacted() {
+        let secret = "sk-test-example";
+        let body = redact_credentials(&format!("Rejected {secret}"), &[("Authorization", format!("Bearer {secret}"))]);
+        assert!(!body.contains(secret));
+        assert!(body.contains("[redacted]"));
     }
 }

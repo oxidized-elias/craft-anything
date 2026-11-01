@@ -334,6 +334,11 @@ replace the tool. Read an AI run's transcript for tools it gave up on.
 
 ## Agent tooling
 
+**A compatible stream ended with a tool call but no terminal event.** The accumulator treated
+having any call as success, and also replaced an output-limit stop with tool use. Native API
+adapters must see a finish reason or stream terminator, and preserve output limits and refusals,
+before the loop may execute a call. Regression tests cover interrupted and output-limited calls.
+
 **Shell quoting breaks generated edits.** Heredocs carrying Python with quotes, `'''` or `\n` were
 mangled by the shell several times. Write multi-line edit scripts to a file and run the file.
 

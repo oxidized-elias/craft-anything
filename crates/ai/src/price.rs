@@ -41,6 +41,13 @@ pub fn cost(model: &str, usage: &Usage, overrides: &BTreeMap<String, Price>, loc
     )
 }
 
+pub fn backend_cost(backend: &str, model: &str, usage: &Usage, overrides: &BTreeMap<String, Price>, local: bool) -> Option<f64> {
+    // Explicit per-model overrides win over discovered provider prices.
+    let scoped = format!("{backend}/{model}");
+    let key = if !overrides.contains_key(model) && overrides.contains_key(&scoped) { scoped.as_str() } else { model };
+    cost(key, usage, overrides, local)
+}
+
 /// Running totals for a conversation.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Meter {

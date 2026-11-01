@@ -108,10 +108,12 @@ pub fn message_json(m: &Msg) -> Value {
     let content: Vec<Value> = m
         .blocks
         .iter()
+        .filter(|b| !matches!(b, Block::ProviderData { .. }))
         .map(|b| match b {
             Block::Text { text } => json!({"type": "text", "text": text}),
             Block::Thinking { thinking, signature } => json!({"type": "thinking", "thinking": thinking, "signature": signature}),
             Block::RedactedThinking { data } => json!({"type": "redacted_thinking", "data": data}),
+            Block::ProviderData { .. } => Value::Null,
             Block::ToolUse { id, name, input } => json!({"type": "tool_use", "id": id, "name": name, "input": input}),
             Block::ToolResult { tool_use_id, content, is_error } => {
                 json!({"type": "tool_result", "tool_use_id": tool_use_id, "content": content, "is_error": is_error})

@@ -48,6 +48,13 @@ impl CraftApp {
     /// What builds when the person doesn't choose: the default from Settings → AI, else an agent
     /// app found on this computer.
     pub fn default_builder(&self) -> Option<String> {
+        if self.ai_config.routing_strategy != craft_anything_ai::registry::Strategy::Auto {
+            return self
+                .ai_config
+                .route(craft_anything_ai::Role::Builder, &craft_anything_ai::registry::Requirements { tools: true, ..Default::default() })
+                .ok()
+                .map(|e| e.config.name);
+        }
         craft_anything_ai::default_builder(&self.backends, self.builder.as_deref()).or_else(|| self.found_agents().next()).map(|b| b.name.clone())
     }
 

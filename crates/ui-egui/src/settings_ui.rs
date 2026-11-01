@@ -294,7 +294,27 @@ fn ai(app: &mut CraftApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     crate::engine_ui::assets_settings(app, ui);
     ui.add_space(16.0);
-    widgets::caption(ui, "Your brains");
+    widgets::caption(ui, "AI Control Center");
+    let mut strategy = app.ai_config.routing_strategy;
+    egui::ComboBox::from_id_salt("ai-routing").selected_text(strategy.title()).show_ui(ui, |ui| {
+        for option in craft_anything_ai::registry::Strategy::ALL {
+            ui.selectable_value(&mut strategy, option, option.title());
+        }
+    });
+    if strategy != app.ai_config.routing_strategy {
+        let hub = app.hub.clone();
+        app.jobs.spawn("Save AI routing", false, move |_| {
+            hub.set_routing_strategy(strategy).map_err(|e| e.for_people())?;
+            Ok(crate::backends(&hub))
+        });
+    }
+    ui.label(
+        RichText::new(tr(
+            "Routing applies to automatic conversations and builds. Explicit AI choices take priority. Unknown prices, quotas and capabilities stay unknown.",
+        ))
+        .size(theme::CAPTION)
+        .color(t.text_dim),
+    );
     ui.add_space(4.0);
     if app.backends.is_empty() {
         ui.label(RichText::new(tr("No AI is set up yet. The built-in engines still work; an AI adds plain-words answers.")).color(t.text_dim));
@@ -341,6 +361,17 @@ fn ai(app: &mut CraftApp, ui: &mut Ui) {
                 }
                 // Who takes a game's files out in Deep mode (an API backend, e.g. Kimi K3).
                 if b.kind != BackendKind::AgentCli {
+                    if widgets::secondary(ui, None, "Test connection").clicked() {
+                        let (hub, name) = (app.hub.clone(), b.name.clone());
+                        app.jobs.spawn("Test AI connection", true, move |_| hub.test_backend(&name).map(crate::Done::AiTest).map_err(|e| e.for_people()));
+                    }
+                    if widgets::secondary(ui, None, "Discover models").clicked() {
+                        let (hub, name) = (app.hub.clone(), b.name.clone());
+                        app.jobs.spawn("Discover AI models", true, move |_| {
+                            hub.discover_models(&name).map_err(|e| e.for_people())?;
+                            Ok(crate::backends(&hub))
+                        });
+                    }
                     if app.extractor.as_ref() == Some(&b.name) {
                         if widgets::secondary(ui, Some("package"), "Extracts")
                             .on_hover_text(tr("In Deep mode this one takes a game's own files out after the study. Click to stop."))
@@ -374,6 +405,25 @@ fn ai(app: &mut CraftApp, ui: &mut Ui) {
             });
             if !b.enabled {
                 ui.label(RichText::new(tr("Off")).color(t.text_faint).size(theme::CAPTION));
+            }
+            let models: Vec<_> = app.ai_config.model_catalog.iter().filter(|m| m.backend == b.name).collect();
+            if !models.is_empty() {
+                egui::ComboBox::from_id_salt(("ai-model", &b.name)).selected_text(&b.model).show_ui(ui, |ui| {
+                    for model in &models {
+                        if ui.selectable_label(model.id == b.model, &model.id).clicked() {
+                            let (hub, name, id) = (app.hub.clone(), b.name.clone(), model.id.clone());
+                            app.jobs.spawn("Choose AI model", false, move |_| {
+                                let mut cfg = hub.config();
+                                let mut entry = cfg.get(&name).cloned().ok_or("The backend was removed.")?;
+                                entry.config.model = id;
+                                cfg.upsert(entry);
+                                hub.save_config(&cfg).map_err(|e| e.for_people())?;
+                                Ok(crate::backends(&hub))
+                            });
+                        }
+                    }
+                });
+                ui.label(RichText::new(format!("{} models discovered", models.len())).size(theme::CAPTION).color(t.text_dim));
             }
         });
         ui.add_space(6.0);

@@ -87,6 +87,9 @@ pub struct Price {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AiConfig {
+    pub routing_strategy: crate::registry::Strategy,
+    /// Last explicitly refreshed catalogs, persisted with the rest of AI settings.
+    pub model_catalog: Vec<crate::registry::ModelInfo>,
     pub backends: Vec<BackendEntry>,
     /// Role (`lead`, `worker`, `reviewer`, `builder`) → backend name.
     pub roles: BTreeMap<String, String>,
@@ -107,6 +110,57 @@ pub fn role_key(r: Role) -> &'static str {
 }
 
 impl AiConfig {
+    /// Reserve room for output and protocol overhead; keep remote small-model servers
+    /// conservative without treating their inference as free.
+    pub fn context_budget_for(&self, first: &BackendEntry) -> u64 {
+        let budget = |entry: &BackendEntry| {
+            self.model_catalog
+                .iter()
+                .find(|m| m.backend == entry.config.name && m.id == entry.config.model)
+                .and_then(|m| m.context_tokens)
+                .filter(|n| *n > 0)
+                .map(|n| (n.saturating_mul(3) / 4).max(1))
+                .unwrap_or(if entry.config.kind == BackendKind::OpenaiCompatible {
+                    crate::context::LOCAL_CONTEXT_TOKENS
+                } else {
+                    crate::context::CLOUD_CONTEXT_TOKENS
+                })
+        };
+        self.chain_from(&first.config.name).iter().skip(1).filter_map(|n| self.get(n)).map(budget).fold(budget(first), u64::min)
+    }
+    pub fn route(&self, role: Role, requirements: &crate::registry::Requirements) -> Result<BackendEntry, ToolError> {
+        let default = self.backend_for(role).cloned().ok_or_else(|| ToolError::unavailable("No AI is set up for this role."))?;
+        if self.roles.get(role_key(role)).and_then(|n| self.get(n)).is_some_and(|e| e.config.enabled)
+            || self.routing_strategy == crate::registry::Strategy::Auto
+        {
+            return Ok(default);
+        }
+        let available: Vec<_> = self.model_catalog.iter().filter(|m| self.get(&m.backend).is_some_and(|e| e.config.enabled)).cloned().collect();
+        let recommended = crate::registry::recommend(&available, self.routing_strategy, requirements)?;
+        let mut entry = self.get(&recommended.backend).cloned().ok_or_else(|| ToolError::invalid("The recommended backend was removed."))?;
+        entry.config.model = recommended.id.clone();
+        Ok(entry)
+    }
+    /// Catalog rates are scoped by backend, so equal model ids on two servers cannot share a price.
+    pub fn effective_prices(&self) -> BTreeMap<String, Price> {
+        let mut prices = self.prices.clone();
+        for m in &self.model_catalog {
+            if let (Some(input), Some(output)) = (m.input_per_mtok, m.output_per_mtok)
+                && input.is_finite()
+                && output.is_finite()
+                && input >= 0.0
+                && output >= 0.0
+            {
+                prices.entry(format!("{}/{}", m.backend, m.id)).or_insert(Price {
+                    input_per_mtok: input,
+                    output_per_mtok: output,
+                    cache_read_per_mtok: Some(input),
+                    cache_write_per_mtok: Some(input),
+                });
+            }
+        }
+        prices
+    }
     /// Parse `settings.ai`. A malformed table gives an error the UI can show (never a panic).
     pub fn from_table(t: &toml::Table) -> Result<AiConfig, ToolError> {
         toml::Value::Table(t.clone()).try_into().map_err(|e: toml::de::Error| {
@@ -148,6 +202,7 @@ impl AiConfig {
         self.backends.retain(|b| b.config.name != name);
         self.roles.retain(|_, v| v != name);
         self.fallback_chain.retain(|v| v != name);
+        self.model_catalog.retain(|m| m.backend != name);
         before != self.backends.len()
     }
 

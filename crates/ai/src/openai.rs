@@ -91,6 +91,7 @@ impl OpenAi {
             "stream": true,
             "stream_options": {"include_usage": true},
             "messages": messages,
+            "max_tokens": req.max_tokens,
         });
         if !self.react
             && !req.tools.is_empty()
@@ -109,10 +110,18 @@ impl OpenAi {
 
     /// Model ids from `GET /models`.
     pub fn list_models(&self, timeout: std::time::Duration) -> Result<Vec<String>, ToolError> {
+        Ok(self.model_catalog(timeout)?.iter().filter_map(|m| m.get("id").or_else(|| m.get("name")).and_then(Value::as_str).map(str::to_string)).collect())
+    }
+
+    /// Preserve discovery metadata instead of reducing the catalog to model ids.
+    pub fn model_catalog(&self, timeout: std::time::Duration) -> Result<Vec<Value>, ToolError> {
         let agent = http::quick_agent(timeout);
         let v = http::get_json(&agent, &self.label, &self.url("models"), &self.headers())?;
-        let arr = v.get("data").or_else(|| v.get("models")).and_then(Value::as_array).cloned().unwrap_or_default();
-        Ok(arr.iter().filter_map(|m| m.get("id").or_else(|| m.get("name")).and_then(Value::as_str).map(str::to_string)).collect())
+        v.get("data")
+            .or_else(|| v.get("models"))
+            .and_then(Value::as_array)
+            .cloned()
+            .ok_or_else(|| ToolError::new(ErrorCode::GarbledOutput, "The provider returned no model catalog array."))
     }
 
     fn stream_once(&self, req: &TurnRequest<'_>, on_delta: &mut dyn FnMut(Delta), stop: &Stop) -> Result<TurnResult, ToolError> {
@@ -190,7 +199,19 @@ pub fn messages_json(m: &Msg, react: bool) -> Vec<Value> {
             let calls: Vec<Value> = m
                 .tool_uses()
                 .into_iter()
-                .map(|(id, name, input)| json!({"id": id, "type": "function", "function": {"name": name, "arguments": input.to_string()}}))
+                .map(|(id, name, input)| {
+                    let mut call = json!({"id": id, "type": "function", "function": {"name": name, "arguments": input.to_string()}});
+                    for block in &m.blocks {
+                        if let Block::ProviderData { provider, data } = block
+                            && provider == "chat_completions"
+                            && data.get("id").and_then(Value::as_str) == Some(id.as_str())
+                            && let Some(extra) = data.get("extra_content")
+                        {
+                            call["extra_content"] = extra.clone();
+                        }
+                    }
+                    call
+                })
                 .collect();
             let mut v = json!({"role": "assistant", "content": if text.is_empty() { Value::Null } else { Value::String(text) }});
             if !calls.is_empty()
@@ -208,6 +229,7 @@ struct CallAcc {
     id: String,
     name: String,
     args: String,
+    extra_content: Option<Value>,
 }
 
 /// Accumulates a streamed chat completion.
@@ -263,6 +285,9 @@ impl ChatStream {
                     continue;
                 }
                 let acc = self.calls.entry(idx).or_default();
+                if let Some(extra) = c.get("extra_content") {
+                    acc.extra_content = Some(extra.clone());
+                }
                 if let Some(id) = c.get("id").and_then(Value::as_str) {
                     acc.id = id.to_string();
                 }
@@ -290,18 +315,22 @@ impl ChatStream {
             let input =
                 if c.args.trim().is_empty() { json!({}) } else { serde_json::from_str(&c.args).unwrap_or_else(|_| crate::anthropic::invalid_input(&c.args)) };
             let id = if c.id.is_empty() { format!("call_{i}") } else { c.id };
+            if let Some(extra) = c.extra_content {
+                blocks.push(Block::ProviderData { provider: "chat_completions".into(), data: json!({"id":id,"extra_content":extra}) });
+            }
             blocks.push(Block::ToolUse { id, name: c.name, input });
         }
         let stop = match self.finish.as_deref() {
             Some(f) => StopReason::parse(f),
-            None if has_calls => StopReason::ToolUse,
             None if self.done => StopReason::EndTurn,
             None => return Err(ToolError::new(ErrorCode::Truncated, "The answer stream ended early.")),
         };
         // Some servers say "stop" even when they emitted tool calls.
-        let stop = if has_calls { StopReason::ToolUse } else { stop };
+        let stop = if has_calls && !matches!(stop, StopReason::MaxTokens | StopReason::Refusal) { StopReason::ToolUse } else { stop };
         let model = if self.model.is_empty() { fallback_model.to_string() } else { self.model };
-        Ok(TurnResult { message: Msg { role: Speaker::Assistant, blocks }, stop, usage: self.usage, model })
+        let mut usage = self.usage;
+        usage.input_tokens = usage.input_tokens.saturating_sub(usage.cache_read_tokens);
+        Ok(TurnResult { message: Msg { role: Speaker::Assistant, blocks }, stop, usage, model })
     }
 }
 
@@ -472,5 +501,45 @@ mod tests {
         assert!(b.get("tools").is_none());
         assert!(b["messages"][0]["content"].as_str().unwrap().contains("Action Input:"));
         assert!(b["messages"][3]["content"].as_str().unwrap().contains("Observation (error): bad"));
+    }
+
+    #[test]
+    fn signed_function_metadata_survives_serialization_and_replay() {
+        let mut stream = ChatStream::default();
+        stream
+            .apply(
+                &SseEvent {
+                    event: None,
+                    data: json!({"choices":[{"delta":{"tool_calls":[{
+            "index":0,"id":"call-1","function":{"name":"core_session_show","arguments":"{}"},
+            "extra_content":{"google":{"thought_signature":"opaque-signature"}}
+        }]},"finish_reason":"tool_calls"}]})
+                    .to_string(),
+                },
+                &mut |_| {},
+            )
+            .unwrap();
+        let message = stream.finish("gemini-test").unwrap().message;
+        let saved = serde_json::to_string(&message).unwrap();
+        let loaded: Msg = serde_json::from_str(&saved).unwrap();
+        let wire = messages_json(&loaded, false);
+        assert_eq!(wire[0]["tool_calls"][0]["extra_content"]["google"]["thought_signature"], "opaque-signature");
+    }
+
+    #[test]
+    fn interrupted_or_output_limited_calls_are_not_executable() {
+        let event = |finish| SseEvent {
+            event: None,
+            data: json!({"choices":[{"delta":{"tool_calls":[{
+            "index":0,"id":"c1","function":{"name":"build_file_write","arguments":"{}"}
+        }]},"finish_reason":finish}]})
+            .to_string(),
+        };
+        let mut interrupted = ChatStream::default();
+        interrupted.apply(&event(Value::Null), &mut |_| {}).unwrap();
+        assert_eq!(interrupted.finish("m").unwrap_err().code, ErrorCode::Truncated);
+        let mut limited = ChatStream::default();
+        limited.apply(&event(json!("length")), &mut |_| {}).unwrap();
+        assert_eq!(limited.finish("m").unwrap().stop, StopReason::MaxTokens);
     }
 }
