@@ -93,9 +93,11 @@ Regression coverage includes loopback mock servers for OpenAI Responses, Gemini 
 discovery persistence and routing, plus unit tests for ranking, replay, cancellation, circuit
 breaking, credential redaction and headless Clean room configuration tools. Full crate tests
 could not run in the implementation environment: crates.io DNS resolution failed and required
-dependencies were not cached. Eighteen unit tests passed in a temporary offline harness using
+test dependencies were not cached. The desktop release build subsequently succeeded offline
+with a writable Cargo cache, and its version smoke check passed. The Codex non-Git-folder
+regression also passed against the compiled production AI library. Eighteen unit tests passed in a temporary offline harness using
 the actual provider, stream, replay, gateway and routing modules with HTTP/evidence host stubs
-and schema derives omitted. This does not verify the engine/UI integration or a full app build.
+and schema derives omitted. These isolated tests do not replace the full engine/UI test suites.
 No live provider engineering build has been claimed.
 
 Account-specific quota/free-tier monitoring, periodic discovery, structured answer schemas,

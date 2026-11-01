@@ -9,9 +9,12 @@ secret scan of all history clean).
 Issue #14 implementation (2026-10-31): direct Gemini/xAI adapters, OpenAI Responses, persisted
 model discovery and routing, native builder fallback chains, and the AI Control Center are added
 on the feature branch. The full proposal is not complete; see [AI providers](ai-providers.md)
-and R2.1. Workspace tests, clippy and the release build are blocked by crates.io DNS/dependency
-availability in this environment. Isolated offline tests cover the transport-independent logic;
-they do not validate the engine/UI integration or replace a full app build.
+and R2.1. The desktop release build now succeeds offline using a writable Cargo cache, and
+the resulting binary reports version 0.2.0. Full workspace tests, clippy and the CLI build
+remain blocked by uncached dependencies and crates.io DNS. Eighteen isolated unit tests passed.
+The Codex launcher also passes `--skip-git-repo-check` for app-managed project folders that
+are not Git repositories, retaining `--sandbox workspace-write` for builders. The regression
+test passed against the compiled production AI library; the installed CLI accepts the flag.
 
 | Area | State | Verified by |
 |---|---|---|

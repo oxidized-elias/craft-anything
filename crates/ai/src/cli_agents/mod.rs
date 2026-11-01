@@ -725,6 +725,20 @@ mod tests {
     }
 
     #[test]
+    fn codex_accepts_non_git_projects_and_keeps_the_builder_sandbox() {
+        let adapter = adapter_for("codex");
+        for access in [Access::Analyse, Access::Build, Access::CleanRoomBuild] {
+            let args = build_args(adapter.as_ref(), &BackendOptions::default(), "build it", "", &mcp(), None, access);
+            assert_eq!(args.iter().filter(|a| a.as_str() == "--skip-git-repo-check").count(), 1);
+            if matches!(access, Access::Build | Access::CleanRoomBuild) {
+                assert!(args.windows(2).any(|w| w[0] == "--sandbox" && w[1] == "workspace-write"));
+            }
+            assert!(!args.iter().any(|a| a.contains("dangerously-bypass")));
+        }
+        assert!(adapter.required_flags().1.contains(&"--skip-git-repo-check"));
+    }
+
+    #[test]
     fn nested_session_variables_are_dropped_but_user_settings_kept() {
         let v = |names: &[&str]| names.iter().map(|s| s.to_string()).collect::<Vec<_>>().into_iter();
         assert!(host_session_vars(v(&["CLAUDE_CODE_ENTRYPOINT", "PATH"])).is_empty(), "outside a session nothing is touched");

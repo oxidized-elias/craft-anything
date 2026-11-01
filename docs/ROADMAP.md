@@ -483,8 +483,9 @@ Owner: maintainers · Status: in progress (built; live runs need keys)
 - [x] Implement persistent model catalogs, constraint-aware recommendations and six routing
       strategies; AI Control Center discovery, model selection and connection tests; CLI and
       `settings_ai_*` tools. Metadata not supplied by a provider stays unknown.
-- [ ] Run the new provider, routing, gateway and native build regression tests, clippy and the
-      desktop release build (dependency downloads blocked by DNS in the implementation environment)
+- [ ] Run the full provider, routing, gateway and native build regression suites and clippy
+      (uncached dependencies still require network). The desktop release build succeeds offline
+      with a writable Cargo cache; the Codex launcher regression passes against the built library
       — claimed: Codex, branch feature/issue-14-native-providers
 - [ ] Validate live Gemini, xAI and OpenAI Responses software builds with provider keys, including
       resuming a saved project and running its checks without an external agent installed.
@@ -496,6 +497,10 @@ Owner: maintainers · Status: in progress (built; live runs need keys)
       context summaries, tool execution, journals and build checks remain the base for this work.
 
 ### R2.2 More coding agents
+- [x] Codex accepts app-managed folders without a Git repository (`--skip-git-repo-check`),
+      preserving the builder's workspace sandbox; regression coverage for analysis and both
+      build modes passes against the compiled AI library. Desktop release build and version
+      smoke check pass; full Cargo test verification remains blocked by uncached dependencies.
 Owner: open · Status: in progress
 - [x] `AcpConversation`: chat with agents that speak ACP (`cli_agents::acp`; agents and their ACP
       arguments in `ACP_AGENTS`: Gemini CLI, Qwen Code, opencode, goose). Opt-in per backend

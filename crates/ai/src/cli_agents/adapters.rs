@@ -288,7 +288,9 @@ impl AgentAdapter for Codex {
     }
 
     fn args(&self, cx: &ArgsCx) -> Vec<String> {
-        let mut v = vec!["exec".to_string(), "--json".into()];
+        // App-managed project folders need not be Git repositories. This skips only the
+        // repository prerequisite; the builder's workspace sandbox remains enabled.
+        let mut v = vec!["exec".to_string(), "--json".into(), "--skip-git-repo-check".into()];
         if cx.builder {
             v.extend(["--sandbox".into(), "workspace-write".into()]);
         }
@@ -304,7 +306,7 @@ impl AgentAdapter for Codex {
     }
 
     fn required_flags(&self) -> (&'static [&'static str], &'static [&'static str]) {
-        (&["exec", "--help"], &["--json"])
+        (&["exec", "--help"], &["--json", "--skip-git-repo-check"])
     }
 
     fn parse(&self, p: &mut StreamParser, v: &Value) -> Vec<AgentEvent> {
